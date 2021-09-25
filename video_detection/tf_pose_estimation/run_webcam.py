@@ -172,7 +172,8 @@ if __name__ == '__main__':
                 dbRef.push({
                     "timestamp": fall_start.strftime("%d-%b-%Y (%H:%M:%S.%f)"),
                     "type": "video",
-                    "audioTranscript": "N/A"
+                    "audioTranscript": "N/A",
+                    "resourceBucketLocation": f"{userID}/VIDEO{prev_timestamp}.avi"
                 })
                 
                 # store blob on firebase storage
