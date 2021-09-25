@@ -1,13 +1,13 @@
 import argparse
 import logging
 import time
-
 import cv2
+import firebase_admin
 import numpy as np
-
 from tf_pose.estimator import TfPoseEstimator
 from tf_pose.networks import get_graph_path, model_wh
-
+from firebase_admin import db
+from firebase_admin import storage
 from datetime import datetime
 
 logger = logging.getLogger('TfPoseEstimator-WebCam')
@@ -17,14 +17,13 @@ ch.setLevel(logging.DEBUG)
 formatter = logging.Formatter('[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s')
 ch.setFormatter(formatter)
 logger.addHandler(ch)
-
 fps_time = 0
 
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
 
-
 if __name__ == '__main__':
+    # parse command line arguments
     parser = argparse.ArgumentParser(description='tf-pose-estimation realtime webcam')
     parser.add_argument('--camera', type=int, default=0)
 
@@ -39,21 +38,19 @@ if __name__ == '__main__':
     
     parser.add_argument('--tensorrt', type=str, default="False",
                         help='for tensorrt process.')
-    
-    parser.add_argument('--save_video', type=bool, default=False,
-                        help='To write output video. default name file_name_output.avi')
+
     args = parser.parse_args()
 
     logger.debug('initialization %s : %s' % (args.model, get_graph_path(args.model)))
     w, h = model_wh(args.resize)
     
+    # check for video dimension
     if w > 0 and h > 0:
         e = TfPoseEstimator(get_graph_path(args.model), target_size=(w, h), trt_bool=str2bool(args.tensorrt))
     else:
         e = TfPoseEstimator(get_graph_path(args.model), target_size=(232, 200), trt_bool=str2bool(args.tensorrt))
         
     logger.debug('cam read+')
-    
     cam = cv2.VideoCapture(args.camera)
     ret_val, image = cam.read()
     logger.info('cam image=%dx%d' % (image.shape[1], image.shape[0]))
@@ -65,18 +62,37 @@ if __name__ == '__main__':
     trigger_video = False
     fall_duration = 0
     
-    
     # initialize videosaver
     prev_time = datetime.now()
-    prev_timestamp = prev_time.strftime("%m%d%Y-%H%M%S")
-    if (args.save_video):
-        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-        out = cv2.VideoWriter(f'../saved/output_{prev_timestamp}.avi', fourcc, 5, (image.shape[1],image.shape[0]))
+    prev_timestamp = prev_time.strftime("%d%b%Y%H%M%S")
+    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+    out = cv2.VideoWriter(f'../saved/VIDEO{prev_timestamp}.avi', fourcc, 5, (image.shape[1],image.shape[0]))
+    
+    
+    #########################################
+    ### Database & Storage Initialization ###
+    #########################################
+    # extract user id
+    with open('../../auth_key/user_id.txt') as f:
+        userID = f.readlines()[0]
+        
+    # initialize database connection
+    databaseURL = 'https://emergency-monitor-hz21-default-rtdb.europe-west1.firebasedatabase.app'
+    cred_obj = firebase_admin.credentials.Certificate('../../auth_key/key.json')
+    default_app = firebase_admin.initialize_app(cred_obj, {
+        'databaseURL': databaseURL,
+        'storageBucket': 'emergency-monitor-hz21.appspot.com'
+    })
+    
+    # create database reference
+    dbRef = db.reference("/users/" + userID + '/emergencies')
+    
+    # initialize storage bucket connection
+    bucket = storage.bucket()
     
     # infinite while loop
     while True:
         ret_val, image = cam.read()
-
         logger.debug('image process+')
         humans = e.inference(image, resize_to_default=(w > 0 and h > 0), upsample_size=args.resize_out_ratio)
         
@@ -96,7 +112,7 @@ if __name__ == '__main__':
                         pass
                     
                     # detect initial fall
-                    elif (y_head - y1[-2]) > 30:
+                    elif (y_head - y1[-2]) > 30 and not fall_state:
                         fall_state = True
                         trigger_video = True
                         fall_start = datetime.now()
@@ -118,26 +134,23 @@ if __name__ == '__main__':
         image = TfPoseEstimator.draw_humans(image, humans, imgcopy=False)
 
         logger.debug('show+')
-        # cv2.putText(image,
-        #             "FPS: %f" % (1.0 / (time.time() - fps_time)),
-        #             (10, 10),  cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-        #             (0, 255, 0), 2)
         cv2.imshow('tf-pose-estimation result', image)
         fps_time = time.time()
         
         # initialize videowriter
-        if (args.save_video) and trigger_video:
+        if trigger_video:
             trigger_video = False
             cur_time = datetime.now()
             
             if (cur_time - prev_time).total_seconds() >= 60:
                 # create new videowriter
-                cur_timestamp = cur_time.strftime("%m%d%Y-%H%M%S")
+                cur_timestamp = cur_time.strftime("%d%b%Y%H%M%S")
                 fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-                out = cv2.VideoWriter(f'../saved/output_{cur_timestamp}.avi', fourcc, 5, (image.shape[1],image.shape[0]))
+                out = cv2.VideoWriter(f'../saved/VIDEO{cur_timestamp}.avi', fourcc, 5, (image.shape[1],image.shape[0]))
                 
                 # update prev time
-                prev_time = cur_time        
+                prev_time = cur_time
+                prev_timestamp = cur_timestamp        
         
         # save video
         if fall_state:
@@ -147,11 +160,26 @@ if __name__ == '__main__':
             # if fall duration is >= 10s, send video for help
             cur_time = datetime.now()
             fall_duration = (cur_time - fall_start).total_seconds()
-            if fall_duration >= 10:
-                fall_duration = 0
-                pass
+            
+            print("FALL_DURATION: ", fall_duration)
+            
+            # trigger fall detection
+            if fall_duration >= 5:
+                fall_state = 0
+                print("FALL DETECTED...")
+
+                # Post request in firebase RTDB
+                dbRef.push({
+                    "timestamp": fall_start.strftime("%d-%b-%Y (%H:%M:%S.%f)"),
+                    "type": "video",
+                    "audioTranscript": "N/A"
+                })
                 
-                        
+                # store blob on firebase storage
+                blob = bucket.blob(f'{userID}/VIDEO{prev_timestamp}.avi')
+                blob.upload_from_filename(f'../saved/VIDEO{prev_timestamp}.avi')
+                
+                
         if cv2.waitKey(1) == 27:
             break
         logger.debug('finished+')
