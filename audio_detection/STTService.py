@@ -1,4 +1,3 @@
-import sys
 import speech_recognition
 import firebase_admin
 from firebase_admin import db
@@ -51,7 +50,10 @@ def listen(recognizer, dbRef, bucket, uid):
 def main():
 
     # Read userID
-    userID = sys.argv[1]
+    with open('../auth_key/user_id.txt') as f:
+        userID = f.readlines()[0]
+
+    print(userID)
 
     # Connect to firebase database
     databaseURL = 'https://emergency-monitor-hz21-default-rtdb.europe-west1.firebasedatabase.app'
