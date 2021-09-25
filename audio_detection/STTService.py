@@ -44,7 +44,7 @@ def main():
 
     # Connect to firebase database
     databaseURL = 'https://emergency-monitor-hz21-default-rtdb.europe-west1.firebasedatabase.app'
-    cred_obj = firebase_admin.credentials.Certificate('key.json')
+    cred_obj = firebase_admin.credentials.Certificate('../auth_key/key.json')
     default_app = firebase_admin.initialize_app(cred_obj, {
 	   'databaseURL' : databaseURL
 	})
