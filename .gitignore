@@ -1,1 +1,2 @@
-auth_key/key.json
+auth_key/*
+audio_detection/audio_file.wav
